@@ -1,0 +1,13 @@
+# Ingested databases. NEVER commit these -- they contain customer log content
+# from cbcollects, and this repo may become public (history and all).
+*.db
+*.db-journal
+*.db-wal
+
+# Cbcollect trees / bundles, in case one is unpacked here while testing.
+cbcollect_info*/
+*.zip
+
+__pycache__/
+*.py[cod]
+.DS_Store

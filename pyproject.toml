@@ -1,0 +1,8 @@
+# cbtriage is a standalone tool, not part of a Couchbase Server package, so it
+# sets its own conventions rather than inheriting ns_server's 79-column one.
+# 88 is black/ruff's default and the whole tree already fits it.
+[tool.ruff]
+line-length = 88
+
+[tool.black]
+line-length = 88

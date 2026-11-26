@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cbtriage</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --fg:#e6e9ef; --mut:#9aa3b2; --accent:#4ea1ff;
+    --crit:#ff4d4f; --err:#ff7a45; --warn:#ffc53d; --info:#52c41a; --debug:#5b6472;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",
+         Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  a { color:var(--accent); }
+  header { display:flex; align-items:center; gap:16px; padding:8px 14px;
+           background:var(--panel); border-bottom:1px solid var(--line);
+           position:sticky; top:0; z-index:5; flex-wrap:wrap; }
+  header h1 { font-size:14px; margin:0; font-weight:600; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:10px;
+          background:var(--panel2); color:var(--mut); border:1px solid var(--line); }
+  .pill.capella { color:#b37feb; border-color:#5a3a8a; }
+  .pill.k8s { color:#36cfc9; border-color:#1d5e5b; }
+  .pill.redact { color:var(--warn); border-color:#6b5a12; }
+  .pill.hostshare { color:var(--warn); border-color:#6b5a12; cursor:help; white-space:pre-line; }
+  .layout { display:flex; align-items:stretch; height:calc(100vh - 41px); }
+  aside { width:250px; min-width:250px; overflow-y:auto; padding:10px;
+          background:var(--panel); border-right:1px solid var(--line); }
+  main { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+  .facet { margin-bottom:12px; }
+  .facet h3 { margin:0 0 4px; font-size:11px; text-transform:uppercase;
+              letter-spacing:.04em; color:var(--mut); display:flex;
+              justify-content:space-between; }
+  .facet label { display:flex; align-items:center; gap:6px; padding:1px 0;
+                 cursor:pointer; font-size:12px; }
+  .facet .cnt { margin-left:auto; color:var(--mut); font-size:11px; }
+  /* Cap is viewport-relative so long facets (nodes, subsystems) show ~12 rows
+     before scrolling; short fixed facets (severities, categories, ...) render
+     at their natural height regardless -- max-height only bites when content
+     overflows. overflow-y on the aside handles several long facets stacking. */
+  .facet-list { max-height:min(40vh,320px); overflow-y:auto; }
+  input[type=text], input[type=datetime-local] {
+    width:100%; background:var(--panel2); border:1px solid var(--line);
+    color:var(--fg); border-radius:5px; padding:5px 7px; font-size:12px; }
+  button { background:var(--panel2); color:var(--fg); border:1px solid var(--line);
+           border-radius:5px; padding:5px 9px; cursor:pointer; font-size:12px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#06131f; border-color:var(--accent);
+                   font-weight:600; }
+  #findings { background:var(--panel); max-height:34vh;
+              overflow-y:auto; border-bottom:1px solid var(--line); }
+  /* Inline strips: every band stacked above the table -- findings, activity,
+     host pressure, cluster overview -- shares one collapse mechanism, so they
+     behave the same way and any of them can be traded for table rows. The
+     header always stays visible and carries the caret, so nothing is hidden
+     without a visible way back. State persists per strip (see initStrips). */
+  .striphdr { display:flex; gap:8px; align-items:baseline; cursor:pointer;
+       user-select:none; font-size:12px; color:var(--mut); font-weight:600;
+       text-transform:uppercase; letter-spacing:.04em; }
+  .striphdr:hover { color:var(--fg); }
+  .striphdr .caret { margin-left:auto; font-weight:400; }
+  /* Uppercase is for the strip's name. A description sitting in the same header
+     is a sentence and stays one. */
+  .striphdr .muted { text-transform:none; font-weight:400; letter-spacing:0; }
+  .strip.collapsed .stripbody { display:none; }
+  #findings { padding:10px 14px; }
+  #findings .striphdr { margin-bottom:8px; }
+  .strip.collapsed #findings .striphdr, #findings.collapsed .striphdr {
+       margin-bottom:0; }
+  .finding { border-left:3px solid var(--line); padding:6px 10px; margin-bottom:6px;
+             background:var(--panel2); border-radius:0 5px 5px 0; cursor:pointer; }
+  .finding:hover { background:#252a35; }
+  .finding.noclick { cursor:default; }
+  .finding.noclick:hover { background:var(--panel2); }
+  .finding .ttl { font-weight:600; }
+  .finding .ho { color:var(--mut); font-size:12px; margin-top:2px; }
+  .finding.crit { border-left-color:var(--crit); }
+  .finding.error { border-left-color:var(--err); }
+  .finding.warn { border-left-color:var(--warn); }
+  .finding.info { border-left-color:var(--info); }
+  #histwrap { padding:6px 14px 0; border-bottom:1px solid var(--line); }
+  #histwrap.collapsed { padding-bottom:6px; }
+  #hist { width:100%; height:90px; display:block; cursor:crosshair; }
+  #histlabels { display:flex; justify-content:space-between; color:var(--mut);
+                font-size:11px; padding:2px 0; }
+  #tablewrap { flex:1; overflow:auto; padding:0 14px 14px; }
+  table { width:100%; border-collapse:collapse; }
+  th { position:sticky; top:0; background:var(--panel); text-align:left;
+       padding:5px 8px; font-size:11px; color:var(--mut); border-bottom:1px solid var(--line); }
+  th.sortable { cursor:pointer; user-select:none; }
+  th.sortable:hover { color:var(--fg); }
+  th.sorted { color:var(--accent); }
+  .pathlink { cursor:pointer; }
+  .pathlink:hover { color:var(--accent); text-decoration:underline; }
+  tr.sentinel td { text-align:center; color:var(--mut); padding:12px;
+       font-size:12px; border-bottom:none; }
+  tr.sentinel.end td { color:var(--accent); }
+  #pager { display:flex; gap:8px; align-items:center; padding:6px 14px;
+       border-top:1px solid var(--line); font-size:12px; }
+  #pager #pginfo { color:var(--mut); }
+  #pager #pgjump { width:64px; }
+  #pager button[disabled] { opacity:.4; cursor:default; }
+  #snappanel { position:fixed; inset:40px; background:var(--panel);
+       border:1px solid var(--line); border-radius:8px; z-index:20;
+       display:flex; flex-direction:column; box-shadow:0 8px 40px #000a; }
+  .proc-head { display:flex; gap:10px; align-items:center; padding:10px 14px;
+       border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  /* Per-service drawer: docked right, so the timeline stays readable beside it. */
+  #svcpanel { position:fixed; top:0; right:0; bottom:0; width:430px; z-index:19;
+       background:var(--panel); border-left:1px solid var(--line);
+       display:flex; flex-direction:column; box-shadow:-8px 0 40px #0008; }
+  #svcbody { flex:1; overflow:auto; padding:10px 14px 18px; }
+  /* Operation drawer. Wider than the service drawer because its core content is
+     a phase table plus per-move rows carrying vbucket, target node and docs. */
+  #oppanel { position:fixed; top:0; right:0; bottom:0; width:560px; z-index:20;
+       background:var(--panel); border-left:1px solid var(--line);
+       display:flex; flex-direction:column; box-shadow:-8px 0 40px #0008; }
+  #opbody { flex:1; overflow:auto; padding:10px 14px 18px; }
+  .op-kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px;
+       font-size:11px; margin-bottom:4px; }
+  .op-kv dt { color:var(--mut); white-space:nowrap; }
+  .op-kv dd { margin:0; min-width:0; word-break:break-word; }
+  /* Phase table: the counts are the headline, so they read as a grid rather
+     than prose. Wide content scrolls inside the drawer, never the page. */
+  .op-tbl { width:100%; border-collapse:collapse; font-size:11px;
+       margin-top:4px; }
+  .op-tbl th { text-align:left; font-weight:600; color:var(--mut);
+       border-bottom:1px solid var(--line); padding:3px 6px 3px 0; }
+  .op-tbl td { padding:3px 6px 3px 0; border-bottom:1px solid var(--line);
+       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .op-tbl td.n { text-align:right; }
+  /* in-flight is the finding, so it is the only coloured column */
+  .op-tbl td.stuck, .op-stuck { color:#ff4d4f; font-weight:600; }
+  .op-scroll { overflow-x:auto; }
+  .op-msg { font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+       font-size:11px; background:var(--panel2); border:1px solid var(--line);
+       padding:6px 8px; border-radius:3px; white-space:pre-wrap;
+       word-break:break-word; }
+  .svc-sec { margin-top:14px; }
+  .svc-sec h4 { margin:0 0 6px; font-size:11px; letter-spacing:.08em;
+       text-transform:uppercase; color:var(--mut); font-weight:600; }
+  .svc-ev { display:flex; gap:8px; align-items:baseline; padding:3px 0;
+       border-bottom:1px solid var(--line); cursor:pointer; }
+  .svc-ev:hover { background:var(--panel2); }
+  .svc-ev .t { font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+       font-size:11px; color:var(--mut); white-space:nowrap; }
+  .svc-ev .w { flex:1; min-width:0; }
+  .svc-st { font-size:11px; font-weight:600; padding:0 5px; border-radius:3px;
+       white-space:nowrap; }
+  .svc-st.started { color:#73d13d; }
+  .svc-st.stopped { color:var(--mut); }
+  .svc-st.restarting { color:var(--warn); }
+  .svc-st.exited { color:#fff; background:#a8071a; }
+  .svc-note { font-size:11px; color:var(--mut); word-break:break-word; }
+  .svc-out { margin:4px 0 0; padding:6px 8px; background:var(--panel2);
+       border-radius:4px; font-size:11px; white-space:pre-wrap; max-height:210px;
+       overflow:auto; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .svc-open { cursor:pointer; color:var(--accent); font-size:10px;
+       border:1px solid var(--line); border-radius:3px; padding:0 4px;
+       margin-left:4px; }
+  .svc-open:hover { border-color:var(--accent); }
+  /* Cluster overview: operation spans over per-node mastership belief lanes, one
+     row per observer, so the shape of a disagreement is visible without reading
+     a single timestamp. Segments are absolutely placed on a shared x-scale; the
+     divergence overlay spans every lane at once.
+
+     INLINE in main, directly above the table, not a modal. Clicking a band
+     drives that table -- as a fixed overlay it covered the very thing it was
+     changing, so every click appeared to do nothing until the panel was closed.
+     The histogram and pressure strip are inline for the same reason; Snapshots
+     is a modal because collection-time state has no counterpart on the
+     timeline to stay visible beside.
+
+     Capped and internally scrollable: the findings block, filter bar, histogram
+     and pressure strip are already above it, and past this cap the table
+     underneath gets no rows at all -- which defeats the point of being inline.
+     The bands sit at the top of the scroll, so the diagram is what is on screen
+     and the lists are a scroll away. Opening it also collapses the findings
+     block, which on a laptop viewport is the difference between six rows of
+     table and none. */
+  #ldrpanel { background:var(--panel); border-bottom:1px solid var(--line);
+       display:flex; flex-direction:column; max-height:36vh; flex-shrink:0; }
+  /* Collapsed findings keeps its header, so the count stays visible and the
+     caret is the way back. */
+  main.fcollapsed #findings { max-height:none; overflow:hidden; }
+  #ldrbody { overflow:auto; padding:8px 14px 12px; }
+  .ldr-head { display:flex; gap:10px; align-items:center; padding:6px 14px;
+       border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  /* Subtitle row, directly under the heading: the strip's description, swapped
+     in place for a live readout of whatever the pointer is over. Native
+     tooltips are too slow and too fiddly to aim at an operation a few pixels
+     wide, so the detail is shown here instead of being hunted for.
+
+     The row is a FIXED two lines and never sized to its content. It lived in
+     the header first, where it shared the row with the title and got about a
+     third of the width, so the detail stopped mid-word; then as a strip footer
+     that appeared only while hovering, which grew the panel and shoved the
+     table below it down a row every time the pointer crossed a band. Reserving
+     the space costs nothing because the description sits in it whenever
+     nothing is hovered. Text past two lines is clipped here; every band still
+     carries the whole of it in its title attribute. */
+  .ldr-sub { height:35px; overflow:hidden; padding:2px 14px 4px;
+       border-bottom:1px solid var(--line); flex-shrink:0;
+       font-size:11px; line-height:1.5; }
+  .ldr-hover { color:var(--accent); white-space:normal; }
+  .strip.collapsed .ldr-sub { display:none; }
+  .ldr-verdict { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+       margin-bottom:10px; font-size:12px; }
+  .ldr-tag { padding:2px 8px; border-radius:10px; background:var(--panel2);
+       border:1px solid var(--line); font-size:11px; }
+  .ldr-tag.bad { color:var(--crit); border-color:#5c1d1f; }
+  .ldr-tag.warn { color:var(--warn); border-color:#6b5a12; }
+  .ldr-tag.ok { color:var(--info); border-color:#2b5c12; }
+  .ldr-chart { position:relative; margin:6px 0 4px; }
+  .ldr-axis { position:relative; height:16px; margin-left:150px;
+       border-bottom:1px solid var(--line); }
+  .ldr-axis span { position:absolute; top:0; font-size:10px; color:var(--mut);
+       transform:translateX(-50%); white-space:nowrap;
+       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  /* End labels are pulled inside the track, or the panel gains a scrollbar for
+     the sake of half a timestamp. */
+  .ldr-axis span.first { transform:none; }
+  .ldr-axis span.last { transform:translateX(-100%); }
+  .ldr-lane { display:flex; align-items:stretch; height:30px; margin-top:3px; }
+  /* The cluster verdict row reads as a summary of the rows under it, so it is
+     taller and separated from them. */
+  .ldr-lane.cluster { height:34px; margin-bottom:9px; }
+  .ldr-lane.cluster .ldr-name { color:var(--fg); font-weight:600; }
+  .ldr-name { width:150px; min-width:150px; font-size:11px; color:var(--mut);
+       display:flex; align-items:center; gap:5px; padding-right:8px;
+       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  /* Operations band: a rebalance or failover is one cluster-scoped span with an
+     owner and an outcome, so it is coloured by OUTCOME and labelled with the
+     node that drove it. Kept above the belief rows and visually distinct from
+     them, because it is a different kind of fact. */
+  .ldr-lane.op { height:22px; }
+  .ldr-lane.op .ldr-name { font-size:10px; }
+  /* A rebalance that took 12 seconds is a sliver on an hour-wide axis, so the
+     block has a floor wide enough to read its outcome colour and to hover. The
+     span is always drawn as a span, since the duration is the information; where
+     the floor is what set the width, a dashed outline marks the block as not to
+     scale -- one symbol instead of a sentence. Zooming redraws it to scale. */
+  .ldr-op { position:absolute; top:2px; bottom:2px; min-width:12px; border-radius:2px;
+       cursor:pointer; font-size:10px; color:#06131f; font-weight:600;
+       display:flex; align-items:center; padding:0 4px; overflow:hidden;
+       white-space:nowrap; }
+  .ldr-op:hover { filter:brightness(1.25); }
+  .ldr-op.completed { background:var(--info); }
+  .ldr-op.failed { background:var(--crit); color:#fff; }
+  .ldr-op.interrupted { background:var(--warn); }
+  /* No terminating event: it may still have been running at capture time, so it
+     is drawn open-ended rather than as something that finished. */
+  .ldr-op.unfinished { background:repeating-linear-gradient(45deg,#b37feb 0 5px,
+       #6b3fa0 5px 10px); color:#fff; }
+  .ldr-op.nostart { border-left:2px dotted #fff9; }
+  .ldr-op.floored { outline:1px dashed #ffffffaa; outline-offset:-2px; }
+  .ldr-cons { position:absolute; top:0; bottom:0; min-width:2px; cursor:pointer;
+       font-size:10px; color:#06131f; font-weight:600; display:flex;
+       align-items:center; padding:0 4px; overflow:hidden; white-space:nowrap; }
+  .ldr-cons:hover { filter:brightness(1.25); }
+  .ldr-cons.two_masters { background:var(--crit); }
+  .ldr-cons.no_master { background:var(--warn); }
+  .ldr-cons.partial { background:#6b5a12; }
+  .ldr-cons.unknown { background:repeating-linear-gradient(90deg,#20242d 0 2px,
+       transparent 2px 6px); cursor:default; }
+  .ldr-bad { color:var(--crit); }
+  .ldr-track { position:relative; flex:1; background:#12151b;
+       border:1px solid var(--line); border-radius:3px; overflow:hidden; }
+  .ldr-seg { position:absolute; top:0; bottom:0; min-width:2px; cursor:pointer;
+       font-size:10px; color:#06131f; display:flex; align-items:center;
+       padding:0 4px; overflow:hidden; white-space:nowrap; font-weight:600; }
+  .ldr-seg:hover { filter:brightness(1.25); }
+  .ldr-seg.self { box-shadow:inset 0 0 0 2px #fff8; }
+  /* No master: nothing was orchestrating, so it reads as absence, not a colour. */
+  .ldr-seg.none { background:repeating-linear-gradient(45deg,#2a2f3a 0 5px,
+       #1a1e26 5px 10px); color:var(--mut); }
+  /* Unknown is visually distinct from no-master: one is a gap in the evidence,
+     the other is evidence of a gap. */
+  .ldr-seg.unknown { background:repeating-linear-gradient(90deg,#20242d 0 2px,
+       transparent 2px 6px); color:#4b525f; font-weight:400; cursor:default; }
+  .ldr-seg.thin { padding:0; }
+  .ldr-conf { position:absolute; top:0; bottom:0; width:2px; background:var(--crit);
+       cursor:pointer; }
+  .ldr-legend { display:flex; gap:12px; flex-wrap:wrap; margin:10px 0 0 150px;
+       font-size:11px; color:var(--mut); align-items:center; }
+  .ldr-sw { display:inline-block; width:10px; height:10px; border-radius:2px;
+       margin-right:4px; vertical-align:-1px; }
+  .ldr-row { display:flex; gap:8px; align-items:baseline; padding:3px 0;
+       border-bottom:1px solid var(--line); cursor:pointer; font-size:12px; }
+  .ldr-row:hover { background:var(--panel2); }
+  .ldr-row .t { font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+       font-size:11px; color:var(--mut); white-space:nowrap; }
+  .snaptabs { display:flex; gap:4px; }
+  .snaptab { background:var(--panel2); color:var(--mut); }
+  .snaptab.active { color:var(--fg); border-color:var(--accent); }
+  .snapsec { flex:1; overflow:auto; }
+  #procwrap { overflow:auto; padding:0 14px 14px; }
+  #snapfacts { padding:12px 14px; display:grid; gap:12px;
+       grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); align-content:start; }
+  .ssechead { grid-column:1/-1; font-size:11px; letter-spacing:.08em;
+       text-transform:uppercase; color:var(--mut); padding-top:8px;
+       border-top:1px solid var(--line); }
+  .ssechead:first-child { padding-top:0; border-top:0; }
+  .scard { background:var(--panel2); border:1px solid var(--line);
+       border-radius:6px; padding:10px 12px; }
+  .scard h4 { margin:0 0 3px; font-size:12px; letter-spacing:.03em; }
+  .scard .snode { color:var(--mut); font-size:11px; margin-bottom:7px; }
+  .scard .srcpath { color:var(--mut); font-size:10px; margin-top:7px;
+       word-break:break-all; }
+  .srow { display:flex; justify-content:space-between; gap:10px; padding:2px 0;
+       font-size:12px; border-top:1px solid #20242d; }
+  .srow:first-of-type { border-top:0; }
+  .srow .sk { color:var(--mut); }
+  .srow .sv { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .srow .sv.hot { color:var(--warn); font-weight:600; }
+  .srow .sv.crit { color:var(--crit); font-weight:600; }
+  .srow .sv .snote { color:var(--mut); font-weight:400; font-size:10px;
+                     font-family:inherit; margin-left:5px; }
+  #procrows td.num { text-align:right; }
+  #procrows tr.proc { cursor:pointer; }
+  #procrows tr.proc:hover td { background:var(--panel2); }
+  #procrows tr.pdraw td { background:#11141a; }
+  td { padding:4px 8px; border-bottom:1px solid #20242d; vertical-align:top; }
+  tr.ev { cursor:pointer; }
+  tr.ev:hover td { background:#1b1f27; }
+  .sev { display:inline-block; width:7px; height:7px; border-radius:50%; }
+  .sev.critical{background:var(--crit)} .sev.error{background:var(--err)}
+  .sev.warn{background:var(--warn)} .sev.info{background:var(--info)}
+  .sev.debug{background:var(--debug)} .sev.unknown{background:var(--mut)}
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .cat { font-size:11px; color:var(--mut); }
+  .clock-inf { color:var(--warn); } .clock-un { color:var(--crit); }
+  pre.raw { white-space:pre-wrap; background:#0b0d11; border:1px solid var(--line);
+            border-radius:5px; padding:8px; margin:4px 0 8px; max-height:340px;
+            overflow:auto; font-size:12px; }
+  #pressurewrap { padding:5px 14px; background:var(--panel);
+              border-bottom:1px solid var(--line); }
+  #pressure { font-size:11px; padding-top:3px; }
+  #pressure .phdr { color:var(--mut); text-transform:uppercase;
+                    letter-spacing:.04em; margin-right:8px; cursor:help; }
+  .pnode { display:inline-flex; gap:7px; align-items:center; margin:2px 9px 2px 0;
+           padding:2px 7px; background:var(--panel2); border:1px solid var(--line);
+           border-radius:5px; }
+  .pnode b { font-weight:600; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .pm { color:var(--mut); }
+  .pm.hot { color:var(--warn); font-weight:600; }
+  .bar { display:flex; gap:8px; align-items:center; padding:6px 14px;
+         border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap; }
+  .muted { color:var(--mut); }
+  .toggle { display:flex; gap:4px; align-items:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>cbtriage</h1>
+  <span id="meta-pills"></span>
+</header>
+<div class="layout">
+  <aside id="filters"></aside>
+  <main>
+    <section id="findings" class="strip"></section>
+    <div id="ldrpanel" class="strip">
+      <div class="ldr-head striphdr" data-strip="overview">
+        <strong>Cluster overview</strong>
+        <span class="caret">▾</span>
+      </div>
+      <div class="ldr-sub">
+        <span id="ldrdesc" class="muted">rebalance and failover operations, over what each node BELIEVED held mastership. Independent of the time window.</span>
+        <span id="ldrhover" class="ldr-hover mono"></span>
+      </div>
+      <div id="ldrbody" class="stripbody"></div>
+    </div>
+    <div id="pressurewrap" class="strip">
+      <div class="striphdr" data-strip="pressure" title="HOST pressure: peak % of time stalled (60s avg) over the visible window, per node, from the coarse ~1/min stats.log heartbeat (ns_heart reads /proc/pressure). This is the whole node, NOT the couchbase cgroup slice — see Snapshots for slice PSI. Open promtimer for the full-resolution series.">
+        <span>host pressure (peak)</span><span class="caret">▾</span></div>
+      <div class="stripbody"><div id="pressure"></div></div>
+    </div>
+    <div id="histwrap" class="strip">
+      <div class="striphdr" data-strip="hist" title="event density over the visible window, stacked by category. Its one unique function is the drag-to-zoom gesture; everything else here is reachable from the Cluster overview.">
+        <span>activity</span>
+        <span class="muted" style="font-weight:400">drag to zoom</span>
+        <span class="caret">▾</span></div>
+      <div class="stripbody">
+        <canvas id="hist"></canvas>
+        <div id="histlabels"><span id="hlo"></span><span class="muted">drag to zoom · click empty to clear</span><span id="hhi"></span></div>
+      </div>
+    </div>
+    <div class="bar">
+      <input type="text" id="q" placeholder="search summary/raw…" style="max-width:240px">
+      <span id="httpfilters" class="toggle" style="display:none">
+        <input type="text" id="minms" class="mono" placeholder="min ms" style="max-width:78px" title="HTTP only: requests that took at least this many ms">
+        <input type="text" id="status" class="mono" placeholder="status 5xx/404" style="max-width:118px" title="HTTP only: status class (5xx, 4xx) or an exact code (404)">
+        <input type="text" id="path" class="mono" placeholder="exact path" style="max-width:150px" title="HTTP only: exact request path (query string ignored). Tip: click a path in the table to set this.">
+      </span>
+      <input type="text" id="tstart" class="mono" placeholder="from YYYY-MM-DD HH:MM:SS" style="max-width:190px" title="UTC start — same format as the time column">
+      <input type="text" id="tend" class="mono" placeholder="to YYYY-MM-DD HH:MM:SS" style="max-width:190px" title="UTC end — same format as the time column">
+      <span class="muted mono" id="tzlabel" style="font-size:11px" title="display + search timezone">UTC</span>
+      <button class="primary" id="apply">Apply</button>
+      <button id="reset">Reset</button>
+      <button id="snapbtn" title="collection-time system facts (cgroup PSI / memory, host reclaim, reclaim thresholds and vm.* tuning) plus process dumps — the collection-time snapshot always, and any timeout_diag_logger process snapshots if a diag timeout fired. Always available, not affected by the time window.">⊞ Snapshots</button>
+      <span class="toggle"><input type="checkbox" id="anchored"><label for="anchored" class="muted">anchored only</label></span>
+      <span class="toggle"><input type="checkbox" id="colltz"><label for="colltz" class="muted" title="show times in the timezone the cbcollect was collected in, per log line (DST-correct); applies to display + search">collection-local time</label></span>
+      <span id="count" class="muted" style="margin-left:auto"></span>
+    </div>
+    <div id="tablewrap"><table><thead><tr id="head">
+      <th id="th-time">time (UTC)</th><th>node</th><th>source</th><th></th><th>subsystem</th><th>summary</th>
+    </tr></thead><tbody id="rows"></tbody></table></div>
+    <div id="pager">
+      <button id="pgprev" title="previous page">‹ Prev</button>
+      <button id="pgnext" title="next page">Next ›</button>
+      <span id="pginfo" class="mono"></span>
+      <span class="muted" style="margin-left:auto">go to page</span>
+      <input type="number" id="pgjump" class="mono" min="1" step="1" title="jump to page">
+    </div>
+  </main>
+</div>
+<div id="snappanel" style="display:none">
+  <div class="proc-head">
+    <strong>Snapshots</strong>
+    <span class="muted" style="font-size:11px">collection-time system one-shots, plus any timeout_diag_logger process dumps — shown regardless of the time window</span>
+    <span class="snaptabs">
+      <button id="snaptab-facts" class="snaptab active">System &amp; cgroup</button>
+      <button id="snaptab-proc" class="snaptab">Processes</button>
+    </span>
+    <span id="snapnodewrap" class="toggle" style="font-size:11px">node
+      <select id="snapnode" class="mono"></select>
+    </span>
+    <button id="snapclose" style="margin-left:auto">✕ close</button>
+  </div>
+  <div id="snapfacts" class="snapsec"></div>
+  <div id="snapproc" class="snapsec" style="display:none">
+    <div class="proc-head" style="border-top:0">
+      <select id="procdump" class="mono"></select>
+      <input type="text" id="procname" class="mono" placeholder="name contains"
+             title="substring match on the process name (registered_name, else initial_call)"
+             style="max-width:150px">
+      <input type="text" id="procloc" class="mono" placeholder="location contains"
+             title="substring match on current_location — e.g. gen_server:call or prim_file:sync_nif, to see everything parked at the same stack top"
+             style="max-width:170px">
+      <input type="number" id="procmq" class="mono" placeholder="queue ≥" min="0"
+             title="only processes whose message queue is at least this long"
+             style="max-width:80px">
+      <span class="toggle">sort
+        <select id="procsort" class="mono">
+          <option value="mq">message queue</option>
+          <option value="memory">memory</option>
+          <option value="reductions">reductions</option>
+          <option value="location">current location</option>
+        </select>
+      </span>
+      <span id="procinfo" class="muted" style="font-size:11px"></span>
+    </div>
+    <div id="procwrap"><table><thead><tr>
+      <th>process</th><th>pid</th><th>status</th><th style="text-align:right">msg queue</th>
+      <th style="text-align:right">memory</th><th style="text-align:right">reductions</th><th>current location</th>
+    </tr></thead><tbody id="procrows"></tbody></table></div>
+  </div>
+</div>
+<div id="svcpanel" style="display:none">
+  <div class="proc-head">
+    <strong id="svcname" class="mono"></strong>
+    <span id="svccount" class="muted" style="font-size:11px"></span>
+    <span id="svcnodewrap" class="toggle" style="font-size:11px">node
+      <select id="svcnode" class="mono"></select>
+    </span>
+    <button id="svcclose" style="margin-left:auto">✕</button>
+  </div>
+  <div id="svcbody"></div>
+</div>
+<div id="oppanel" style="display:none">
+  <div class="proc-head">
+    <strong id="opname" class="mono"></strong>
+    <span id="opsub" class="muted" style="font-size:11px"></span>
+    <button id="opclose" style="margin-left:auto">✕</button>
+  </div>
+  <div id="opbody"></div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
